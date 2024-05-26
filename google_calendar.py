@@ -1,3 +1,5 @@
+import datetime
+
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from models import User, engine, Calendar
@@ -9,6 +11,8 @@ from typing import List, Dict
 from asyncio import run
 from json import load
 from os import getenv
+from keyboards import auth_google_keyboard
+from datetime import datetime, timedelta
 
 load_dotenv()
 
@@ -42,16 +46,15 @@ def get_google_client(installed_data: Dict) -> GoogleClient:
     )
 
 
-def authenticate_google_calendar(telegram_id: int):
+def authenticate_google_calendar(telegram_id: int, bot, message):
     installed_data: Dict = get_credentials_info(getenv('CREDENTIALS_FILE'))
 
     client = get_google_client(installed_data)
-    authorization_url = client.get_authorize_url()
-    print(authorization_url)
+    auth_link = client.get_authorize_url()
+    auth_keyboard = auth_google_keyboard(auth_link)
+    bot.send_message(message.chat.id, "Ссылка для регистрации в Google API", reply_markup=auth_keyboard)
 
-    # todo: прописать логику отправки ботом сообщения со ссылкой регистрации
-
-    if not authorization_url.startswith('https://'):
+    if not auth_link.startswith('https://'):
         raise ValueError("authorization_url должен начинаться с https://")
 
     access_token = session_database.query(User).filter_by(telegram_id=telegram_id).first()
@@ -61,13 +64,13 @@ def authenticate_google_calendar(telegram_id: int):
         user: User = User(telegram_id=telegram_id, access_token=access_token)
         session_database.add(user)
         session_database.commit()
-
+    bot.send_message(message.chat.id, "Успешная регистрация в Google API")
     credentials = Credentials(access_token)
     return build('calendar', 'v3', credentials=credentials)
 
 
-def get_all_calendars_user(telegram_id: int) -> List[Calendar]:
-    service = get_service_google_calendar(telegram_id)
+def get_all_calendars_user(telegram_id: int, bot, message) -> List[Calendar]:
+    service = get_service_google_calendar(telegram_id, bot, message)
 
     id_user = session_database.query(User.id).filter_by(telegram_id=telegram_id).scalar()
     user_calendars_type_list = session_database.query(Calendar).filter_by(id_user=id_user).all()
@@ -91,15 +94,21 @@ def get_all_calendars_user(telegram_id: int) -> List[Calendar]:
     return user_calendars
 
 
-def get_service_google_calendar(telegram_id):
+def get_service_google_calendar(telegram_id, bot, message):
     access_token = session_database.query(User).filter_by(telegram_id=telegram_id).first()
     if not access_token:
-        return authenticate_google_calendar(telegram_id=telegram_id)
+        return authenticate_google_calendar(telegram_id=telegram_id, bot=bot, message=message)
     return build(
         serviceName='calendar',
         version='v3',
         credentials=Credentials(access_token)
     )
+
+
+def get_calendar_id(telegram_id, calendar_name):
+    id_user = session_database.query(User).filter_by(telegram_id=telegram_id).first().id
+    return session_database.query(Calendar).filter_by(id_user=id_user,
+                                                      calendar_name=calendar_name).first().calendar_id
 
 
 def create_event_to_calendar(
@@ -108,8 +117,9 @@ def create_event_to_calendar(
         description: str,
         date_start_iso: str,
         date_end_iso: str,
-        telegram_id: int) -> None:
-    service = get_service_google_calendar(telegram_id)
+        telegram_id: int,
+        bot, message) -> None:
+    service = get_service_google_calendar(telegram_id, bot, message)
 
     service.events().insert(
         calendarId=calendar_id,
@@ -117,16 +127,13 @@ def create_event_to_calendar(
             "summary": summary,
             "description": description,
             "start": {
-                "dateTime": date_start_iso,
-                "timeZone": 'Europe/Moscow'
+                "dateTime": date_start_iso + 'Z',
+                'timeZone': 'UTC',
             },
             "end": {
-                "dateTime": date_end_iso,
-                "timeZone": 'Europe/Moscow'
+                "dateTime": date_end_iso + 'Z',
+                'timeZone': 'UTC',
             }
         }
     ).execute()
-
-
-if __name__ == '__main__':
-    print(get_all_calendars_user(12344))
+    bot.send_message(message.chat.id, "Событие создано")
