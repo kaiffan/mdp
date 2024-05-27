@@ -1,7 +1,6 @@
-import datetime
-
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from keyboards import auth_google_keyboard  # предполагается, что вы определили это где-то
 from models import User, engine, Calendar
 from aioauth_client import GoogleClient
 from sqlalchemy.orm import Session
@@ -11,22 +10,36 @@ from typing import List, Dict
 from asyncio import run
 from json import load
 from os import getenv
-from keyboards import auth_google_keyboard
-from datetime import datetime, timedelta
 
 load_dotenv()
 
 SCOPES = ['https://www.googleapis.com/auth/calendar']
 session_database = Session(bind=engine)
+telegram_cred = {}
 
 
 def get_credentials_info(name_credentials_file: str) -> dict:
+    """
+    Загрузка учетных данных Google API из файла JSON.
+
+    Args:
+        name_credentials_file (str): имя файла JSON, содержащего учетные данные.
+
+    Returns:
+        dict: словарь с учетными данными Google API.
+    """
     with open(name_credentials_file, 'r') as credentials_file:
         cred_data = load(credentials_file)
         return cred_data['web']
 
 
 async def get_authorization_code():
+    """
+    Асинхронное получение кода авторизации.
+
+    Returns:
+        str: код авторизации, полученный от сервера.
+    """
     authorization_code = None
     while not authorization_code:
         async with ClientSession() as session:
@@ -38,6 +51,15 @@ async def get_authorization_code():
 
 
 def get_google_client(installed_data: Dict) -> GoogleClient:
+    """
+    Создание и возврат объекта GoogleClient.
+
+    Args:
+        installed_data (Dict): словарь с установленными данными.
+
+    Returns:
+        GoogleClient: экземпляр GoogleClient.
+    """
     return GoogleClient(
         client_id=installed_data['client_id'],
         client_secret=installed_data['client_secret'],
@@ -47,6 +69,17 @@ def get_google_client(installed_data: Dict) -> GoogleClient:
 
 
 def authenticate_google_calendar(telegram_id: int, bot, message):
+    """
+    Аутентификация пользователя в Google Календаре.
+
+    Args:
+        telegram_id (int): ID пользователя в Telegram.
+        bot: экземпляр бота Telegram.
+        message: объект сообщения, полученный от пользователя.
+
+    Returns:
+        Resource: ресурс Google Календаря API.
+    """
     installed_data: Dict = get_credentials_info(getenv('CREDENTIALS_FILE'))
 
     client = get_google_client(installed_data)
@@ -66,10 +99,22 @@ def authenticate_google_calendar(telegram_id: int, bot, message):
         session_database.commit()
     bot.send_message(message.chat.id, "Успешная регистрация в Google API")
     credentials = Credentials(access_token)
+    telegram_cred.update({message.from_user.id: credentials})
     return build('calendar', 'v3', credentials=credentials)
 
 
 def get_all_calendars_user(telegram_id: int, bot, message) -> List[Calendar]:
+    """
+    Получение всех календарей, связанных с пользователем.
+
+    Args:
+        telegram_id (int): ID пользователя в Telegram.
+        bot: экземпляр бота Telegram.
+        message: объект сообщения, полученный от пользователя.
+
+    Returns:
+        List[Calendar]: Список объектов календаря.
+    """
     service = get_service_google_calendar(telegram_id, bot, message)
 
     id_user = session_database.query(User.id).filter_by(telegram_id=telegram_id).scalar()
@@ -95,17 +140,38 @@ def get_all_calendars_user(telegram_id: int, bot, message) -> List[Calendar]:
 
 
 def get_service_google_calendar(telegram_id, bot, message):
+    """
+    Получение сервиса Google Календаря.
+
+    Args:
+        telegram_id: ID пользователя в Telegram.
+        bot: экземпляр бота Telegram.
+        message: объект сообщения, полученный от пользователя.
+
+    Returns:
+        Resource: ресурс Google Календаря API.
+    """
     access_token = session_database.query(User).filter_by(telegram_id=telegram_id).first()
     if not access_token:
         return authenticate_google_calendar(telegram_id=telegram_id, bot=bot, message=message)
     return build(
         serviceName='calendar',
         version='v3',
-        credentials=Credentials(access_token)
+        credentials=telegram_cred.get(message.from_user.id)
     )
 
 
-def get_calendar_id(telegram_id, calendar_name):
+def get_calendar_id(telegram_id: int, calendar_name: str) -> str:
+    """
+        Получает идентификатор календаря по имени календаря и ID пользователя в Telegram.
+
+        Args:
+            telegram_id: ID пользователя в Telegram.
+            calendar_name: имя календаря.
+
+        Returns:
+            str: идентификатор календаря.
+        """
     id_user = session_database.query(User).filter_by(telegram_id=telegram_id).first().id
     return session_database.query(Calendar).filter_by(id_user=id_user,
                                                       calendar_name=calendar_name).first().calendar_id
@@ -119,6 +185,22 @@ def create_event_to_calendar(
         date_end_iso: str,
         telegram_id: int,
         bot, message) -> None:
+    """
+    Создает событие в календаре.
+
+    Args:
+        calendar_id (str): идентификатор календаря, в котором нужно создать событие.
+        summary (str): краткое описание события.
+        description (str): подробное описание события.
+        date_start_iso (str): дата и время начала события в формате ISO 8601.
+        date_end_iso (str): дата и время окончания события в формате ISO 8601.
+        telegram_id (int): ID пользователя в Telegram.
+        bot: экземпляр бота Telegram.
+        message: объект сообщения, полученный от пользователя.
+
+    Returns:
+        None
+    """
     service = get_service_google_calendar(telegram_id, bot, message)
 
     service.events().insert(
@@ -127,13 +209,12 @@ def create_event_to_calendar(
             "summary": summary,
             "description": description,
             "start": {
-                "dateTime": date_start_iso + 'Z',
-                'timeZone': 'UTC',
+                "dateTime": date_start_iso,
+                "timeZone": 'Europe/Moscow'
             },
             "end": {
-                "dateTime": date_end_iso + 'Z',
-                'timeZone': 'UTC',
+                "dateTime": date_end_iso,
+                "timeZone": 'Europe/Moscow'
             }
-        }
-    ).execute()
+        }).execute()
     bot.send_message(message.chat.id, "Событие создано")
