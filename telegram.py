@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-bot = telebot.TeleBot(os.getenv('TOKEN'))
+bot = telebot.TeleBot('6626382969:AAEr363nkPdfJDrUHaQp3FBA6np_ZRilcOY')
 selected_calendars = {}
 text_without_date = []
 match_name_to_callback = {}
@@ -95,7 +95,6 @@ def add_text_with_date_callback(callback: CallbackQuery):
         bot.answer_callback_query(callback.id, "Создаём с этой датой")
         bot.send_message(callback.message.chat.id,
                          f"Дата сохранена.\nВведите /create_event для создания события с этой датой")
-        # вызов handler создания события
     elif callback.data == "button_edit":
         for element in text_without_date:
             if element[2] == callback.message.chat.id:
@@ -130,7 +129,6 @@ def create_event_handler(message: Message):
                              telegram_id=message.from_user.id,
                              bot=bot,
                              message=message)
-    # удалять пользователя токен на 1 сессию
 
 
 @bot.message_handler(func=lambda message: True)
